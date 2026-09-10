@@ -1,17 +1,61 @@
 import os
 import re
+import json
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+
+# ============================================================
+# SETTINGS
+# ============================================================
 
 PRODUCT_URL = "https://www.amazon.in/dp/B0FQFJ87HN"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+STATE_FILE = "state.json"
+
+
+# ============================================================
+# STATE
+# ============================================================
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return {
+            "status": "UNKNOWN",
+            "price": None
+        }
+
+
+def save_state(status, price):
+    state = {
+        "status": status,
+        "price": price
+    }
+
+    with open(STATE_FILE, "w", encoding="utf-8") as file:
+        json.dump(state, file, indent=2)
+
+
+# ============================================================
+# TELEGRAM
+# ============================================================
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials are missing.")
+        return False
+
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
 
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -19,7 +63,11 @@ def send_telegram(message):
     }
 
     try:
-        response = requests.post(url, data=data, timeout=30)
+        response = requests.post(
+            url,
+            data=data,
+            timeout=30
+        )
 
         if response.status_code == 200:
             print("Telegram notification sent.")
@@ -33,6 +81,10 @@ def send_telegram(message):
     return False
 
 
+# ============================================================
+# AMAZON CHECK
+# ============================================================
+
 def check_amazon():
 
     headers = {
@@ -45,6 +97,7 @@ def check_amazon():
     }
 
     try:
+
         response = requests.get(
             PRODUCT_URL,
             headers=headers,
@@ -54,13 +107,17 @@ def check_amazon():
         print("HTTP Status:", response.status_code)
 
         if response.status_code != 200:
+            print("Amazon page could not be accessed.")
             return "UNKNOWN", None
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
 
-        # -----------------------------
+        # ====================================================
         # AVAILABILITY
-        # -----------------------------
+        # ====================================================
 
         availability = ""
 
@@ -75,13 +132,20 @@ def check_amazon():
             element = soup.select_one(selector)
 
             if element:
-                text = element.get_text(" ", strip=True)
+
+                text = element.get_text(
+                    " ",
+                    strip=True
+                )
 
                 if text:
                     availability = text
                     break
 
-        page_text = soup.get_text(" ", strip=True).lower()
+        page_text = soup.get_text(
+            " ",
+            strip=True
+        ).lower()
 
         if not availability:
 
@@ -96,12 +160,13 @@ def check_amazon():
             for phrase in phrases:
 
                 if phrase in page_text:
+
                     availability = phrase
                     break
 
-        # -----------------------------
+        # ====================================================
         # PRICE
-        # -----------------------------
+        # ====================================================
 
         price = None
 
@@ -123,7 +188,10 @@ def check_amazon():
 
             for element in elements:
 
-                text = element.get_text(" ", strip=True)
+                text = element.get_text(
+                    " ",
+                    strip=True
+                )
 
                 match = re.search(
                     r"₹\s*[\d,]+(?:\.\d{1,2})?",
@@ -131,38 +199,54 @@ def check_amazon():
                 )
 
                 if match:
+
                     price = match.group(0)
                     break
 
             if price:
                 break
 
-        # -----------------------------
+        # ====================================================
         # STOCK STATUS
-        # -----------------------------
+        # ====================================================
 
         availability_lower = availability.lower()
 
-        if any(x in availability_lower for x in [
+        out_of_stock = [
             "currently unavailable",
             "out of stock",
             "temporarily out of stock",
             "unavailable"
-        ]):
+        ]
+
+        in_stock = [
+            "in stock",
+            "available to ship"
+        ]
+
+        if any(
+            phrase in availability_lower
+            for phrase in out_of_stock
+        ):
 
             status = "OUT_OF_STOCK"
 
-        elif any(x in availability_lower for x in [
-            "in stock",
-            "available to ship"
-        ]):
+        elif any(
+            phrase in availability_lower
+            for phrase in in_stock
+        ):
 
             status = "IN_STOCK"
 
         else:
 
-            add_to_cart = soup.select_one("#add-to-cart-button")
-            buy_now = soup.select_one("#buy-now-button")
+            add_to_cart = soup.select_one(
+                "#add-to-cart-button"
+            )
+
+            buy_now = soup.select_one(
+                "#buy-now-button"
+            )
 
             if add_to_cart or buy_now:
                 status = "IN_STOCK"
@@ -178,34 +262,96 @@ def check_amazon():
         return "UNKNOWN", None
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 if __name__ == "__main__":
 
     print("=" * 60)
     print("AMAZON STOCK MONITOR")
     print("=" * 60)
 
-    status, price = check_amazon()
+    previous_state = load_state()
 
-    print("Checked:", datetime.now().strftime("%d-%m-%Y %I:%M:%S %p"))
-    print("Status :", status)
-    print("Price  :", price or "Not found")
+    previous_status = previous_state.get(
+        "status",
+        "UNKNOWN"
+    )
 
-    if status == "IN_STOCK":
+    previous_price = previous_state.get(
+        "price"
+    )
 
-        message = (
-            "🟢 PRODUCT AVAILABLE!\n\n"
-            "Apple iPhone 17 256 GB White\n"
-            f"💰 Price: {price or 'Not found'}\n\n"
-            "🛒 Amazon India\n"
-            f"{PRODUCT_URL}"
+    current_status, current_price = check_amazon()
+
+    checked_time = datetime.now().strftime(
+        "%d-%m-%Y %I:%M:%S %p"
+    )
+
+    print("Checked :", checked_time)
+    print("Previous:", previous_status)
+    print("Current :", current_status)
+    print("Price   :", current_price or "Not found")
+
+    # ========================================================
+    # PRODUCT IS IN STOCK
+    # ========================================================
+
+    if current_status == "IN_STOCK":
+
+        # Product has just come back in stock
+        if previous_status != "IN_STOCK":
+
+            message = (
+                "🟢 PRODUCT AVAILABLE!\n\n"
+                "Apple iPhone 17 256 GB White\n"
+                f"💰 Price: {current_price or 'Not found'}\n\n"
+                "🛒 Amazon India\n"
+                f"{PRODUCT_URL}"
+            )
+
+            send_telegram(message)
+
+        # Product was already in stock
+        else:
+
+            print(
+                "Product is still in stock."
+            )
+
+    # ========================================================
+    # PRODUCT IS OUT OF STOCK
+    # ========================================================
+
+    elif current_status == "OUT_OF_STOCK":
+
+        print(
+            "🔴 Product is currently OUT OF STOCK."
         )
 
-        send_telegram(message)
-
-    elif status == "OUT_OF_STOCK":
-
-        print("🔴 Product is OUT OF STOCK.")
+    # ========================================================
+    # UNKNOWN
+    # ========================================================
 
     else:
 
-        print("⚠️ Stock status is UNKNOWN.")
+        print(
+            "⚠️ Stock status is UNKNOWN."
+        )
+
+        # Don't overwrite a known status if
+        # Amazon temporarily gives us unclear data.
+        current_status = previous_status
+        current_price = previous_price
+
+    # ========================================================
+    # SAVE STATE
+    # ========================================================
+
+    save_state(
+        current_status,
+        current_price
+    )
+
+    print("State saved successfully.")
