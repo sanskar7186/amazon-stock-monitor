@@ -1,4 +1,4 @@
 {
-  "status": "IN_STOCK",
-  "price": "\u20b999,900.00"
+  "status": "OUT_OF_STOCK",
+  "price": null
 }
